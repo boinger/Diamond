@@ -247,16 +247,16 @@ class Collector(object):
         Get metric path
         """
         if 'path_prefix' in self.config:
-            prefix = self.config['path_prefix']
+            prefix = self.config['path_prefix'].replace('.', '_')
         else:
             prefix = 'systems'
 
         if 'path_suffix' in self.config:
-            suffix = self.config['path_suffix']
+            suffix = self.config['path_suffix'].replace('.', '_')
         else:
             suffix = None
 
-        hostname = get_hostname(self.config)
+        hostname = get_hostname(self.config).replace('.', '_')
         if hostname is not None:
             if prefix:
                 prefix = ".".join((prefix, hostname))
