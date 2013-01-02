@@ -14,7 +14,7 @@ It's OK.
 
 Enable this handler
 
- * handers = diamond.handler.stats_d.StatsdHandler
+ * handlers = diamond.handler.stats_d.StatsdHandler
 
 
 #### Notes
@@ -70,7 +70,7 @@ class StatsdHandler(Handler):
         # to work with the statsd module's view of the world.
         # It will get re-joined by the python-statsd module.
         (prefix, name) = metric.path.rsplit(".", 1)
-        logging.debug("Sending {0} {1}|g".format(name, metric.value))
+        logging.debug("Sending {0}.{1} {2}|g".format(name, prefix, metric.value))
         statsd.Gauge(prefix, self.connection).send(name, metric.value)
 
     def _connect(self):
