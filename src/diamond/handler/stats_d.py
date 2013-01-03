@@ -69,9 +69,10 @@ class StatsdHandler(Handler):
         # Split the path into a prefix and a name
         # to work with the statsd module's view of the world.
         # It will get re-joined by the python-statsd module.
-        (prefix, name) = metric.path.rsplit(".", 1)
-        logging.debug("Sending {0}.{1} {2}|g".format(name, prefix, metric.value))
-        statsd.Gauge(prefix, self.connection).send(name, metric.value)
+        (path, name) = metric.path.rsplit(".", 1)
+        (prefix, hostname, metric_name) = metric.path.split(".", 2)
+        logging.debug("Sending Hostname:{0}; Prefix:{1}; Metric_name:{2}; Value:{3}".format(hostname, prefix, metric_name, metric.value))
+        statsd.Gauge("{0}.{1}".format(metric_name, prefix), self.connection).send(hostname, metric.value)
 
     def _connect(self):
         """
