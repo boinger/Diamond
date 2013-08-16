@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# coding=utf-8
 ###############################################################################
 
 import os
@@ -130,34 +131,40 @@ class CollectorTestCase(unittest.TestCase):
         return self.assertPublished(mock, key, value, expected_value)
 
     def assertPublished(self, mock, key, value, expected_value=1):
-        calls = filter(lambda x: x[0][0] == key, mock.call_args_list)
+        if type(mock) is list:
+            for m in mock:
+                calls = (filter(lambda x: x[0][0] == key, m.call_args_list))
+                if len(calls) > 0:
+                    break
+        else:
+            calls = filter(lambda x: x[0][0] == key, mock.call_args_list)
 
         actual_value = len(calls)
-        expected_value = 1
         message = '%s: actual number of calls %d, expected %d' % (
             key, actual_value, expected_value)
 
         self.assertEqual(actual_value, expected_value, message)
 
-        actual_value = calls[0][0][1]
-        expected_value = value
-        precision = 0
+        if expected_value:
+            actual_value = calls[0][0][1]
+            expected_value = value
+            precision = 0
 
-        if isinstance(value, tuple):
-            expected_value, precision = expected_value
+            if isinstance(value, tuple):
+                expected_value, precision = expected_value
 
-        message = '%s: actual %r, expected %r' % (key,
-                                                  actual_value,
-                                                  expected_value)
-        #print message
+            message = '%s: actual %r, expected %r' % (key,
+                                                      actual_value,
+                                                      expected_value)
+            #print message
 
-        if precision is not None:
-            self.assertAlmostEqual(float(actual_value),
-                                   float(expected_value),
-                                   places=precision,
-                                   msg=message)
-        else:
-            self.assertEqual(actual_value, expected_value, message)
+            if precision is not None:
+                self.assertAlmostEqual(float(actual_value),
+                                       float(expected_value),
+                                       places=precision,
+                                       msg=message)
+            else:
+                self.assertEqual(actual_value, expected_value, message)
 
     def assertUnpublishedMany(self, mock, dict, expected_value=0):
         return self.assertPublishedMany(mock, dict, expected_value)
@@ -166,7 +173,11 @@ class CollectorTestCase(unittest.TestCase):
         for key, value in dict.iteritems():
             self.assertPublished(mock, key, value, expected_value)
 
-        mock.reset_mock()
+        if type(mock) is list:
+            for m in mock:
+                m.reset_mock()
+        else:
+            mock.reset_mock()
 
     def assertUnpublishedMetric(self, mock, key, value, expected_value=0):
         return self.assertPublishedMetric(mock, key, value, expected_value)

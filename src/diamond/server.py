@@ -55,13 +55,16 @@ class Server(object):
                 configname = os.path.basename(filename)
                 handlername = configname.split('.')[0]
                 if handlername not in self.config['handlers']:
-                    self.config['handlers'][handlername] = configobj.ConfigObj()
+                    config['handlers'][handlername] = configobj.ConfigObj()
 
                 configfile = os.path.join(
                     config['server']['handlers_config_path'],
                     configname)
-                self.config['handlers'][handlername].merge(
-                    configobj.ConfigObj(configfile))
+                hconfig = configobj.ConfigObj(configfile)
+                if handlername in config['handlers']:
+                    config['handlers'][handlername].merge(hconfig)
+                else:
+                    config['handlers'][handlername] = hconfig
 
         self.config = config
 
@@ -126,6 +129,9 @@ class Server(object):
         """
         Scan for and add paths to the include path
         """
+        # Verify the path is valid
+        if not os.path.isdir(path):
+            return
         # Add path to the system path
         sys.path.append(path)
         # Load all the files in path
@@ -166,7 +172,8 @@ class Server(object):
             elif (os.path.isfile(fpath)
                   and len(f) > 3
                   and f[-3:] == '.py'
-                  and f[0:4] != 'test'):
+                  and f[0:4] != 'test'
+                  and f[0] != '.'):
 
                 # Check filter
                 if filter and os.path.join(path, f) != filter:
@@ -311,6 +318,9 @@ class Server(object):
         self.running = True
 
         # Load handlers
+        if 'handlers_path' in self.config['server']:
+            handlers_path = self.config['server']['handlers_path']
+            self.load_include_path(handlers_path)
         self.load_handlers()
 
         # Load config
@@ -339,6 +349,9 @@ class Server(object):
         self.running = True
 
         # Load handlers
+        if 'handlers_path' in self.config['server']:
+            handlers_path = self.config['server']['handlers_path']
+            self.load_include_path(handlers_path)
         self.load_handlers()
 
         # Overrides collector config dir

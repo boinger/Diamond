@@ -11,6 +11,8 @@ The CPUCollector collects CPU utilization metric using /proc/stat.
 
 import diamond.collector
 import os
+import time
+from diamond.collector import str_to_bool
 
 try:
     import psutil
@@ -22,6 +24,8 @@ except ImportError:
 class CPUCollector(diamond.collector.Collector):
 
     PROC = '/proc/stat'
+    INTERVAL = 1
+
     MAX_VALUES = {
         'user': diamond.collector.MAX_COUNTER,
         'nice': diamond.collector.MAX_COUNTER,
@@ -38,6 +42,8 @@ class CPUCollector(diamond.collector.Collector):
     def get_default_config_help(self):
         config_help = super(CPUCollector, self).get_default_config_help()
         config_help.update({
+            'percore':  'Collect metrics per cpu core or just total',
+            'simple':   'only return aggregate CPU% metric',
         })
         return config_help
 
@@ -49,7 +55,9 @@ class CPUCollector(diamond.collector.Collector):
         config.update({
             'enabled':  'True',
             'path':     'cpu',
+            'percore':  'True',
             'xenfix':   None,
+            'simple':   'False',
         })
         return config
 
@@ -57,7 +65,37 @@ class CPUCollector(diamond.collector.Collector):
         """
         Collector cpu stats
         """
+
+        def cpu_time_list():
+            """
+            get cpu time list
+            """
+            statFile = open(self.PROC, "r")
+            timeList = statFile.readline().split(" ")[2:6]
+            for i in range(len(timeList)):
+                timeList[i] = int(timeList[i])
+            statFile.close()
+            return timeList
+
+        def cpu_delta_time(interval):
+            """
+            Get before and after cpu times for usage calc
+            """
+            pre_check = cpu_time_list()
+            time.sleep(interval)
+            post_check = cpu_time_list()
+            for i in range(len(pre_check)):
+                post_check[i] -= pre_check[i]
+            return post_check
+
         if os.access(self.PROC, os.R_OK):
+
+            #If simple only return aggregate CPU% metric
+            if str_to_bool(self.config['simple']):
+                dt = cpu_delta_time(self.INTERVAL)
+                cpuPct = 100 - (dt[len(dt) - 1] * 100.00 / sum(dt))
+                self.publish('percent', str('%.4f' % cpuPct))
+                return True
 
             results = {}
             # Open file
@@ -73,6 +111,8 @@ class CPUCollector(diamond.collector.Collector):
 
                 if cpu == 'cpu':
                     cpu = 'total'
+                elif not str_to_bool(self.config['percore']):
+                    continue
 
                 results[cpu] = {}
 
@@ -109,12 +149,12 @@ class CPUCollector(diamond.collector.Collector):
                     metric_name = '.'.join([cpu, s])
                     # Get actual data
                     metrics[metric_name] = self.derivative(metric_name,
-                                                         long(stats[s]),
-                                                         self.MAX_VALUES[s])
+                                                           long(stats[s]),
+                                                           self.MAX_VALUES[s])
 
             # Check for a bug in xen where the idle time is doubled for guest
             # See https://bugzilla.redhat.com/show_bug.cgi?id=624756
-            if self.config['xenfix'] is None or self.config['xenfix'] == True:
+            if self.config['xenfix'] is None or self.config['xenfix'] is True:
                 if os.path.isdir('/proc/xen'):
                     total = 0
                     for metric_name in metrics.keys():
@@ -136,7 +176,12 @@ class CPUCollector(diamond.collector.Collector):
                              metrics[metric_name])
             return True
 
-        elif psutil:
+        else:
+            if not psutil:
+                self.log.error('Unable to import psutil')
+                self.log.error('No cpu metrics retrieved')
+                return None
+
             cpu_time = psutil.cpu_times(True)
             total_time = psutil.cpu_times()
             for i in range(0, len(cpu_time)):
@@ -145,10 +190,11 @@ class CPUCollector(diamond.collector.Collector):
                              self.derivative(metric_name + '.user',
                                              cpu_time[i].user,
                                              self.MAX_VALUES['user']))
-                self.publish(metric_name + '.nice',
-                             self.derivative(metric_name + '.nice',
-                                             cpu_time[i].nice,
-                                             self.MAX_VALUES['nice']))
+                if hasattr(cpu_time[i], 'nice'):
+                    self.publish(metric_name + '.nice',
+                                 self.derivative(metric_name + '.nice',
+                                                 cpu_time[i].nice,
+                                                 self.MAX_VALUES['nice']))
                 self.publish(metric_name + '.system',
                              self.derivative(metric_name + '.system',
                                              cpu_time[i].system,
@@ -163,10 +209,11 @@ class CPUCollector(diamond.collector.Collector):
                          self.derivative(metric_name + '.user',
                                          total_time.user,
                                          self.MAX_VALUES['user']))
-            self.publish(metric_name + '.nice',
-                         self.derivative(metric_name + '.nice',
-                                         total_time.nice,
-                                         self.MAX_VALUES['nice']))
+            if hasattr(total_time, 'nice'):
+                self.publish(metric_name + '.nice',
+                             self.derivative(metric_name + '.nice',
+                                             total_time.nice,
+                                             self.MAX_VALUES['nice']))
             self.publish(metric_name + '.system',
                          self.derivative(metric_name + '.system',
                                          total_time.system,

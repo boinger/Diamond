@@ -3,6 +3,9 @@
 """
 Collect IO Stats
 
+Note: You may need to artifically generate some IO load on a disk/partition
+before graphite will generate the metrics.
+
  * http://www.kernel.org/doc/Documentation/iostats.txt
 
 #### Dependencies
@@ -56,7 +59,8 @@ class DiskUsageCollector(diamond.collector.Collector):
         config.update({
             'enabled':  'True',
             'path':     'iostat',
-            'devices':  ('md[0-9]+$'
+            'devices':  ('PhysicalDrive[0-9]+$'
+                         + '|md[0-9]+$'
                          + '|sd[a-z]+[0-9]*$'
                          + '|x?vd[a-z]+[0-9]*$'
                          + '|disk[0-9]+$'
@@ -77,42 +81,48 @@ class DiskUsageCollector(diamond.collector.Collector):
         result = {}
 
         if os.access('/proc/diskstats', os.R_OK):
-            file = open('/proc/diskstats')
+            fp = open('/proc/diskstats')
 
-            for line in file:
-                try:
-                    columns = line.split()
-                    # On early linux v2.6 versions, partitions have only 4
-                    # output fields not 11. From linux 2.6.25 partitions have
-                    # the full stats set.
-                    if len(columns) < 14:
+            try:
+                for line in fp:
+                    try:
+                        columns = line.split()
+                        # On early linux v2.6 versions, partitions have only 4
+                        # output fields not 11. From linux 2.6.25 partitions
+                        # have the full stats set.
+                        if len(columns) < 14:
+                            continue
+                        major = int(columns[0])
+                        minor = int(columns[1])
+                        device = columns[2]
+
+                        if (device.startswith('ram')
+                            or device.startswith('loop')):
+                            continue
+
+                        result[(major, minor)] = {
+                            'device': device,
+                            'reads': float(columns[3]),
+                            'reads_merged': float(columns[4]),
+                            'reads_sectors': float(columns[5]),
+                            'reads_milliseconds': float(columns[6]),
+                            'writes': float(columns[7]),
+                            'writes_merged': float(columns[8]),
+                            'writes_sectors': float(columns[9]),
+                            'writes_milliseconds': float(columns[10]),
+                            'io_in_progress': float(columns[11]),
+                            'io_milliseconds': float(columns[12]),
+                            'io_milliseconds_weighted': float(columns[13])
+                        }
+                    except ValueError:
                         continue
-                    major = int(columns[0])
-                    minor = int(columns[1])
-                    device = columns[2]
+            finally:
+                fp.close()
+        else:
+            if not psutil:
+                self.log.error('Unable to import psutil')
+                return None
 
-                    if device.startswith('ram') or device.startswith('loop'):
-                        continue
-
-                    result[(major, minor)] = {
-                        'device': device,
-                        'reads': float(columns[3]),
-                        'reads_merged': float(columns[4]),
-                        'reads_sectors': float(columns[5]),
-                        'reads_milliseconds': float(columns[6]),
-                        'writes': float(columns[7]),
-                        'writes_merged': float(columns[8]),
-                        'writes_sectors': float(columns[9]),
-                        'writes_milliseconds': float(columns[10]),
-                        'io_in_progress': float(columns[11]),
-                        'io_milliseconds': float(columns[12]),
-                        'io_milliseconds_weighted': float(columns[13])
-                    }
-                except ValueError:
-                    continue
-
-            file.close()
-        elif psutil:
             disks = psutil.disk_io_counters(True)
             for disk in disks:
                     result[(0, len(result))] = {
@@ -150,7 +160,12 @@ class DiskUsageCollector(diamond.collector.Collector):
         exp = self.config['devices']
         reg = re.compile(exp)
 
-        for key, info in self.get_disk_statistics().iteritems():
+        results = self.get_disk_statistics()
+        if not results:
+            self.log.error('No diskspace metrics retrieved')
+            return None
+
+        for key, info in results.iteritems():
             metrics = {}
 
             name = info['device']
@@ -210,20 +225,32 @@ class DiskUsageCollector(diamond.collector.Collector):
                 metric_name = 'average_request_size_%s' % unit
                 metrics[metric_name] = 0
 
-            metrics['average_queue_length'] = (metrics['io_milliseconds']
-                                               / time_delta * 1000.0)
+            metrics['io'] = metrics['reads'] + metrics['writes']
+
+            metrics['average_queue_length'] = (
+                metrics['io_milliseconds_weighted']
+                / time_delta
+                / 1000.0)
+
+            metrics['util_percentage'] = (metrics['io_milliseconds']
+                                          / time_delta
+                                          / 10.0)
+
+            metrics['iops'] = 0
+            metrics['service_time'] = 0
             metrics['await'] = 0
             metrics['read_await'] = 0
             metrics['write_await'] = 0
-            metrics['service_time'] = 0
-            metrics['iops'] = (metrics['reads']
-                               + metrics['writes']) / time_delta
-            metrics['io'] = metrics['reads'] + metrics['writes']
-            metrics['util_percentage'] = 0
             metrics['concurrent_io'] = 0
 
-            if metrics['io'] > 0:
+            if metrics['reads'] > 0:
+                metrics['read_await'] = (metrics['reads_milliseconds']
+                                         / metrics['reads'])
+            if metrics['writes'] > 0:
+                metrics['write_await'] = (metrics['writes_milliseconds']
+                                          / metrics['writes'])
 
+            if metrics['io'] > 0:
                 for unit in self.config['byte_unit']:
                     rkey = 'reads_%s' % unit
                     wkey = 'writes_%s' % unit
@@ -231,21 +258,17 @@ class DiskUsageCollector(diamond.collector.Collector):
                     metrics[metric_name] = (metrics[rkey]
                                             + metrics[wkey]) / metrics['io']
 
+                metrics['iops'] = metrics['io'] / time_delta
+
                 metrics['service_time'] = (metrics['io_milliseconds']
                                            / metrics['io'])
-                metrics['await'] = (metrics['io_milliseconds_weighted']
-                                    / metrics['io'])
-                if metrics['reads'] > 0:
-                    metrics['read_await'] = (metrics['reads_milliseconds']
-                                             / metrics['reads'])
-                if metrics['writes'] > 0:
-                    metrics['write_await'] = (metrics['writes_milliseconds']
-                                              / metrics['writes'])
-                metrics['util_percentage'] = (metrics['io']
-                                              * metrics['service_time']
-                                              / 1000.0) * 100.0
 
-                # http://scr.bi/OnsGg4 Page 28
+                metrics['await'] = ((metrics['reads_milliseconds']
+                                     + metrics['writes_milliseconds'])
+                                    / metrics['io'])
+
+                # http://www.scribd.com/doc/15013525
+                # Page 28
                 metrics['concurrent_io'] = (metrics['reads_per_second']
                                             + metrics['writes_per_second']
                                             ) * (metrics['service_time']

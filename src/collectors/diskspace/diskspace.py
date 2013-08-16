@@ -69,7 +69,7 @@ class DiskSpaceCollector(diamond.collector.Collector):
             # exclude everything that begins /boot or /mnt
             #       exclude_filters = m,
             # exclude everything that includes the letter "m"
-            'exclude_filters': '^/export/home',
+            'exclude_filters': ['^/export/home'],
 
             # We don't use any derivative data to calculate this value
             # Thus we can use a threaded model
@@ -79,6 +79,23 @@ class DiskSpaceCollector(diamond.collector.Collector):
             'byte_unit': ['byte']
         })
         return config
+
+    def __init__(self, config, handlers):
+        super(DiskSpaceCollector, self).__init__(config, handlers)
+
+        # Precompile things
+        self.exclude_filters = self.config['exclude_filters']
+        if isinstance(self.exclude_filters, basestring):
+            self.exclude_filters = [self.exclude_filters]
+
+        self.exclude_reg = re.compile('|'.join(self.exclude_filters))
+
+        self.filesystems = []
+        if isinstance(self.config['filesystems'], basestring):
+            for filesystem in self.config['filesystems'].split(','):
+                self.filesystems.append(filesystem.strip())
+        elif isinstance(self.config['filesystems'], list):
+            self.filesystems = self.config['filesystems']
 
     def get_disk_labels(self):
         """
@@ -116,15 +133,34 @@ class DiskSpaceCollector(diamond.collector.Collector):
                 except (IndexError, ValueError):
                     continue
 
+                # Skip the filesystem if it is not in the list of valid
+                # filesystems
+                if fs_type not in self.filesystems:
+                    self.log.debug("Ignoring %s since it is of type %s which "
+                                   + " is not in the list of filesystems.",
+                                   mount_point, fs_type)
+                    continue
+
+                # Process the filters
+                if self.exclude_reg.match(mount_point):
+                    self.log.debug("Ignoring %s since it is in the "
+                                   + "exclude_filter list.", mount_point)
+                    continue
+
                 if (mount_point.startswith('/dev')
                     or mount_point.startswith('/proc')
                         or mount_point.startswith('/sys')):
                     continue
 
-                if device.startswith('/') and mount_point.startswith('/'):
-                    stat = os.stat(mount_point)
-                    major = os.major(stat.st_dev)
-                    minor = os.minor(stat.st_dev)
+                if '/' in device and mount_point.startswith('/'):
+                    try:
+                        stat = os.stat(mount_point)
+                        major = os.major(stat.st_dev)
+                        minor = os.minor(stat.st_dev)
+                    except OSError:
+                        self.log.debug("Path %s is not mounted - skipping.",
+                                       mount_point)
+                        continue
 
                     if (major, minor) in result:
                         continue
@@ -137,7 +173,11 @@ class DiskSpaceCollector(diamond.collector.Collector):
 
             file.close()
 
-        elif psutil:
+        else:
+            if not psutil:
+                self.log.error('Unable to import psutil')
+                return None
+
             partitions = psutil.disk_partitions(False)
             for partition in partitions:
                 result[(0, len(result))] = {
@@ -150,39 +190,46 @@ class DiskSpaceCollector(diamond.collector.Collector):
         return result
 
     def collect(self):
-        exclude_reg = re.compile(self.config['exclude_filters'])
-
-        filesystems = []
-        for filesystem in self.config['filesystems'].split(','):
-            filesystems.append(filesystem.strip())
-
         labels = self.get_disk_labels()
-        for key, info in self.get_file_systems().iteritems():
-        # Skip the filesystem if it is not in the list of valid filesystems
-            if info['fs_type'] not in filesystems:
-                continue
+        results = self.get_file_systems()
+        if not results:
+            self.log.error('No diskspace metrics retrieved')
+            return None
 
-        # Process the filters
-            if exclude_reg.match(info['mount_point']):
-                continue
-
+        for key, info in results.iteritems():
             if info['device'] in labels:
                 name = labels[info['device']]
             else:
                 name = info['mount_point'].replace('/', '_')
-                name = name.replace('.', '_')
+                name = name.replace('.', '_').replace('\\', '')
                 if name == '_':
                     name = 'root'
 
-            data = os.statvfs(info['mount_point'])
-            block_size = data.f_bsize
+            if hasattr(os, 'statvfs'):  # POSIX
+                data = os.statvfs(info['mount_point'])
 
-            blocks_total = data.f_blocks
-            blocks_free = data.f_bfree
-            blocks_avail = data.f_bavail
-            inodes_total = data.f_files
-            inodes_free = data.f_ffree
-            inodes_avail = data.f_favail
+                block_size = data.f_bsize
+
+                blocks_total = data.f_blocks
+                blocks_free = data.f_bfree
+                blocks_avail = data.f_bavail
+                inodes_total = data.f_files
+                inodes_free = data.f_ffree
+                inodes_avail = data.f_favail
+
+            elif os.name == 'nt':       # Windows
+                # fixme: used still not exact compared to disk_usage.py
+                # from psutil
+                raw_data = psutil.disk_usage(info['mount_point'])
+
+                block_size = 1  # fixme: ?
+
+                blocks_total = raw_data.total
+                blocks_free = raw_data.free
+                blocks_used = raw_data.used
+
+            else:
+                raise NotImplementedError("platform not supported")
 
             for unit in self.config['byte_unit']:
 
@@ -191,23 +238,23 @@ class DiskSpaceCollector(diamond.collector.Collector):
                     blocks_total - blocks_free)
                 metric_value = diamond.convertor.binary.convert(
                     value=metric_value, oldUnit='byte', newUnit=unit)
-                self.publish(metric_name, metric_value, 2, 'GAUGE')
+                self.publish_gauge(metric_name, metric_value, 2)
 
                 metric_name = '%s.%s_free' % (name, unit)
                 metric_value = float(block_size) * float(blocks_free)
                 metric_value = diamond.convertor.binary.convert(
                     value=metric_value, oldUnit='byte', newUnit=unit)
-                self.publish(metric_name, metric_value, 2, 'GAUGE')
+                self.publish_gauge(metric_name, metric_value, 2)
 
-                metric_name = '%s.%s_avail' % (name, unit)
-                metric_value = float(block_size) * float(blocks_avail)
-                metric_value = diamond.convertor.binary.convert(
-                    value=metric_value, oldUnit='byte', newUnit=unit)
-                self.publish(metric_name, metric_value, 2, 'GAUGE')
+                if os.name != 'nt':
+                    metric_name = '%s.%s_avail' % (name, unit)
+                    metric_value = float(block_size) * float(blocks_avail)
+                    metric_value = diamond.convertor.binary.convert(
+                        value=metric_value, oldUnit='byte', newUnit=unit)
+                    self.publish_gauge(metric_name, metric_value, 2)
 
-            self.publish('%s.inodes_used' % name, inodes_total - inodes_free,
-                         metric_type='GAUGE')
-            self.publish('%s.inodes_free' % name, inodes_free,
-                         metric_type='GAUGE')
-            self.publish('%s.inodes_avail' % name, inodes_avail,
-                         metric_type='GAUGE')
+            if os.name != 'nt':
+                self.publish_gauge('%s.inodes_used' % name,
+                                   inodes_total - inodes_free)
+                self.publish_gauge('%s.inodes_free' % name, inodes_free)
+                self.publish_gauge('%s.inodes_avail' % name, inodes_avail)

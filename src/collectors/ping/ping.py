@@ -10,11 +10,24 @@ Only valid for ipv4 hosts currently
 
 #### Configuration
 
-Configuration is done by adding in extra keys like this
+Configuration is done by:
 
- * target_1 - example.org
- * target_fw - 192.168.0.1
- * target_localhost - localhost
+Create a file named: PingCollector.conf in the collectors_config_path
+
+ * enabled = true
+ * interval = 60
+ * target_1 = example.org
+ * target_fw = 192.168.0.1
+ * target_localhost = localhost
+
+Test your configuration using the following command:
+
+diamond-setup --print -C PingCollector
+
+You should get a reponse back that indicates 'enabled': True and see entries
+for your targets in pairs like:
+
+'target_1': 'example.org'
 
 We extract out the key after target_ and use it in the graphite node we push.
 
@@ -23,6 +36,7 @@ We extract out the key after target_ and use it in the graphite node we push.
 import subprocess
 import diamond.collector
 import os
+from diamond.collector import str_to_bool
 
 
 class PingCollector(diamond.collector.Collector):
@@ -56,11 +70,13 @@ class PingCollector(diamond.collector.Collector):
                 metric_name = host.replace('.', '_')
 
                 if not os.access(self.config['bin'], os.X_OK):
+                    self.log.error("Path %s does not exist or is not executable"
+                                   % self.config['bin'])
                     return
 
                 command = [self.config['bin'], '-nq', '-c 1', host]
 
-                if self.config['use_sudo']:
+                if str_to_bool(self.config['use_sudo']):
                     command.insert(0, self.config['sudo_cmd'])
 
                 ping = subprocess.Popen(
@@ -70,11 +86,11 @@ class PingCollector(diamond.collector.Collector):
                 # Linux
                 if ping.startswith('rtt'):
                     ping = ping.split()[3].split('/')[0]
-                    metric_value = int(round(float(ping)))
+                    metric_value = float(ping)
                 # OS X
                 elif ping.startswith('round-trip '):
                     ping = ping.split()[3].split('/')[0]
-                    metric_value = int(round(float(ping)))
+                    metric_value = float(ping)
                 # Unknown
                 else:
                     metric_value = 10000
