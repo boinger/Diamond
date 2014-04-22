@@ -223,27 +223,5 @@ class ElasticSearchCollector(diamond.collector.Collector):
         # network
         self._copy_two_level(metrics, 'network', data['network'])
 
-        if 'indices' in self.config['stats']:
-            #
-            # individual index stats
-            result = self._get('_stats?clear=true&docs=true&store=true&'
-                               + 'indexing=true&get=true&search=true')
-            if not result:
-                return
-
-            _all = result['_all']
-            self._index_metrics(metrics, 'indices._all', _all['primaries'])
-
-            if 'indices' in _all:
-                indices = _all['indices']
-            elif 'indices' in result:          # elasticsearch >= 0.90RC2
-                indices = result['indices']
-            else:
-                return
-
-            for name, index in indices.iteritems():
-                self._index_metrics(metrics, 'indices.%s' % name,
-                                    index['primaries'])
-
         for key in metrics:
             self.publish(key, metrics[key])
